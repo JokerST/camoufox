@@ -1,0 +1,85 @@
+name: Sync Fork with Upstream
+
+on:
+  schedule:
+    # 每6小时自动运行一次
+    - cron: '0 */6 * * *'
+  # 允许在 Actions 页面手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取所有历史记录和Tag
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Sync code and tags from upstream
+        run: |
+          # 配置Git用户信息，用于提交
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 添加上游仓库为远程
+          # 请将下面的 URL 替换为你的上游仓库地址
+          UPSTREAM_URL="https://github.com/daijro/camoufox.git"
+          git remote add upstream $UPSTREAM_URL || git remote set-url upstream $UPSTREAM_URL
+          
+          # 拉取上游所有代码和Tags
+          git fetch upstream --tags --force
+          
+          # 将上游代码合并到你的Fork (假设你的默认分支是 main)
+          git checkout main
+          git merge upstream/main --allow-unrelated-histories --no-edit || echo "Merge might have conflicts, manual check needed."
+          
+          # 推送代码和所有Tags到你的Fork
+          git push origin main --tags --force
+
+      - name: Sync Releases and assets
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # 自动检测上游仓库 (基于当前Fork的parent)
+          UPSTREAM_REPO=$(gh repo view --json parent -q .parent.nameWithOwner)
+          echo "Upstream repository: $UPSTREAM_REPO"
+          
+          # 获取上游所有Releases的Tag列表
+          # 注意：这里会处理所有Release，你可以根据需要修改为只处理最新的
+          gh release list --repo "$UPSTREAM_REPO" --limit 100 --json tagName -q '.[].tagName' | while read TAG; do
+            echo "Processing release: $TAG"
+            
+            # 检查你的Fork中是否已存在该Release
+            if gh release view "$TAG" --repo ${{ github.repository }} &>/dev/null; then
+              echo "  - Release already exists, skipping."
+            else
+              echo "  - Creating release $TAG in fork..."
+              # 获取上游Release的详细信息和附件URL
+              gh release view "$TAG" --repo "$UPSTREAM_REPO" --json name,body,assets > /tmp/upstream_release.json
+              
+              NAME=$(jq -r '.name // empty' /tmp/upstream_release.json)
+              [ -z "$NAME" ] && NAME="$TAG" # 如果名称为空，则使用Tag作为名称
+              BODY=$(jq -r '.body // empty' /tmp/upstream_release.json)
+              echo "$BODY" > /tmp/release_body.md
+              
+              # 下载附件
+              mkdir -p /tmp/assets
+              jq -r '.assets[].url' /tmp/upstream_release.json | while read ASSET_URL; do
+                ASSET_NAME=$(basename "$ASSET_URL")
+                echo "    - Downloading asset: $ASSET_NAME"
+                curl -fL -H "Authorization: token $GH_TOKEN" -o "/tmp/assets/$ASSET_NAME" "$ASSET_URL"
+              done
+              
+              # 在你的Fork中创建Release并上传附件
+              gh release create "$TAG" \
+                --repo ${{ github.repository }} \
+                --title "$NAME" \
+                --notes-file /tmp/release_body.md \
+                /tmp/assets/*
+            fi
+          done
