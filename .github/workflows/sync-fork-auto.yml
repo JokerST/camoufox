@@ -40,7 +40,8 @@ jobs:
           git merge upstream/main --allow-unrelated-histories --no-edit || echo "Merge might have conflicts, manual check needed."
           
           # 推送代码和所有Tags到你的Fork
-          git push origin main --tags --force
+          # git push origin main --tags --force
+          git push https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/JokerST/camoufox.git main --tags --force
 
       - name: Sync Releases and assets
         env:
